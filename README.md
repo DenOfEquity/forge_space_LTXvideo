@@ -7,6 +7,7 @@ will download ~8.7GB models (+ ~18GB text encoder from PixArt, unless you alread
 
 >[!NOTE]
 >Install via *Extensions* tab; *Install from URL* sub-tab; use URL of this repo.
+>
 >Initial load can be *slow*.
 
 >[!TIP]
@@ -18,6 +19,7 @@ pipeline.enable_model_cpu_offload()
 
 >[!IMPORTANT]
 >Size / frames you can generate is dependent on available VRAM. Start low. Most likely fail point is VAE, after inference.
+>
 >Results saved to standard *Outputs* folder. Filename is *LTXvideo_**n**.mp4* where n resets to 0 at start of session.
 
 >[!NOTE]
