@@ -20,7 +20,7 @@ pipeline.enable_model_cpu_offload()
 >[!IMPORTANT]
 >Size / frames you can generate is dependent on available VRAM. Start low. Most likely fail point is VAE, after inference.
 >
->Results saved to standard *Outputs* folder. Filename is *LTXvideo_**n**.mp4* where n resets to 0 at start of session.
+>Results saved to standard *outputs* folder. Filename is *LTXvideo_**n**.mp4* where n resets to 0 at start of session.
 
 >[!NOTE]
 >known issue: result does not display in **Generated Output** section.
