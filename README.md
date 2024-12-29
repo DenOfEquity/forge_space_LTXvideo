@@ -26,3 +26,7 @@ pipeline.enable_model_cpu_offload()
 >
 >Results saved to standard *Outputs* folder. Filename is *LTXvideo_**datetime**.mp4*.
 
+
+
+https://github.com/user-attachments/assets/857f2c6b-4af4-4e22-9362-cc3f3f7fc24a
+
