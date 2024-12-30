@@ -1,4 +1,4 @@
-# needs diffusers 0.32.0.dev or higher (currrently, install from src)
+# needs diffusers 0.32.0.dev or higher
 from diffusers.utils import check_min_version
 check_min_version("0.32.0")
 
@@ -93,61 +93,7 @@ def preset_changed(preset):
 #patchifier = SymmetricPatchifier(patch_size=1)
 
 
-
-
-def generate_video_from_text(
-    prompt="",
-    negative_prompt="",
-    frame_rate=25,
-    seed=646373,
-    num_inference_steps=30,
-    guidance_scale=3,
-    height=480,
-    width=800,
-    num_frames=41,
-    progress=gr.Progress(),
-):
-    if len(prompt.strip()) < 50:
-        raise gr.Error(
-            "Prompt must be at least 50 characters long. Please provide more details for the best results.",
-            duration=5,
-        )
-
-    generator = torch.Generator(device="cuda").manual_seed(seed)
-
-    def gradio_progress_callback(self, step, timestep, kwargs):
-        progress((step + 1) / num_inference_steps)
-
-    try:
-        with torch.no_grad():
-            video = pipeline(
-                prompt              = prompt,
-                negative_prompt     = negative_prompt,
-                num_inference_steps = num_inference_steps,
-                num_frames          = num_frames,
-                height              = height,
-                width               = width,
-                guidance_scale      = guidance_scale,
-                generator           = generator,
-                image               = None,
-            ).frames[0]
-
-        output_path = f"outputs\\LTXvideo_{datetime.now().strftime('%Y%m%d%H%M%S')}.mp4"
-        export_to_video(video, output_path, fps=frame_rate)
-        del video
-    except Exception as e:
-        raise gr.Error(
-            f"An error occurred while generating the video. Please try again. Error: {e}",
-            duration=5,
-        )
-    finally:
-        torch.cuda.empty_cache()
-        gc.collect()
-
-    return output_path
-
-
-def generate_video_from_image(
+def generate_video(
     image,
     prompt="",
     negative_prompt="",
@@ -155,8 +101,8 @@ def generate_video_from_image(
     seed=646373,
     num_inference_steps=30,
     guidance_scale=3,
-    height=480,
     width=800,
+    height=480,
     num_frames=41,
     progress=gr.Progress(),
 ):
@@ -166,9 +112,6 @@ def generate_video_from_image(
             "Prompt must be at least 50 characters long. Please provide more details for the best results.",
             duration=5,
         )
-
-    if not image:
-        raise gr.Error("Please provide an input image.", duration=5)
 
     generator = torch.Generator(device="cuda").manual_seed(seed)
 
@@ -182,8 +125,8 @@ def generate_video_from_image(
                 negative_prompt = negative_prompt,
                 num_inference_steps=num_inference_steps,
                 num_frames=num_frames,
-                height=height,
                 width=width,
+                height=height,
                 guidance_scale=guidance_scale,
                 generator=generator,
                 frame_rate=frame_rate,
@@ -214,47 +157,6 @@ def unload():
     torch.cuda.empty_cache()
 
 
-def create_advanced_options():
-    with gr.Accordion("Step 4: Advanced Options (Optional)", open=True):
-        seed = gr.Slider(label="4.1 Seed", minimum=0, maximum=1000000, step=1, value=646373)
-        inference_steps = gr.Slider(label="4.2 Inference Steps", minimum=1, maximum=50, step=1, value=30)
-        guidance_scale = gr.Slider(label="4.3 Guidance Scale", minimum=1.0, maximum=5.0, step=0.1, value=3.0)
-
-        height_slider = gr.Slider(
-            label="4.4 Height",
-            minimum=256,
-            maximum=1024,
-            step=32,
-            value=480,
-            visible=True,
-        )
-        width_slider = gr.Slider(
-            label="4.5 Width",
-            minimum=256,
-            maximum=1024,
-            step=32,
-            value=800,
-            visible=True,
-        )
-        num_frames_slider = gr.Slider(
-            label="4.5 Number of Frames",
-            minimum=1,
-            maximum=200,
-            step=1,
-            value=41,
-            visible=True,
-        )
-
-        return [
-            seed,
-            inference_steps,
-            guidance_scale,
-            height_slider,
-            width_slider,
-            num_frames_slider,
-        ]
-
-
 # Define the Gradio interface with tabs
 with gr.Blocks(theme=gr.themes.Soft()) as demo:
     with gr.Row(elem_id="title-row"):
@@ -265,6 +167,105 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         </div>
         """
         )
+
+    with gr.Row():
+        with gr.Column():
+            img2vid_image = gr.Image(
+                type="pil",
+                height="50vh",
+                label="Upload Input Image (leave empty for Text-to-Video)",
+                elem_id="image_upload",
+            )
+            txt2vid_prompt = gr.Textbox(
+                label="Enter Your Prompt",
+                placeholder="Describe the video you want to generate (minimum 50 characters)...",
+                value="A woman with long brown hair and light skin smiles at another woman with long blonde hair. The woman with brown hair wears a black jacket and has a small, barely noticeable mole on her right cheek. The camera angle is a close-up, focused on the woman with brown hair's face. The lighting is warm and natural, likely from the setting sun, casting a soft glow on the scene. The scene appears to be real-life footage.",
+                lines=5,
+            )
+
+            txt2vid_negative_prompt = gr.Textbox(
+                label="Enter Negative Prompt",
+                placeholder="Describe what you don't want in the video...",
+                value="low quality, worst quality, deformed, distorted, disfigured, motion smear, motion artifacts, fused fingers, bad anatomy, weird hand, ugly",
+                lines=2,
+            )
+
+            txt2vid_preset = gr.Dropdown(
+                choices=[p["label"] for p in preset_options],
+                value="800x480, 41 frames",
+                label="Choose Resolution Preset",
+            )
+
+            with gr.Row():
+                width_slider = gr.Slider(
+                    label="Width",
+                    minimum=256,
+                    maximum=1024,
+                    step=32,
+                    value=800,
+                    visible=True,
+                )
+                height_slider = gr.Slider(
+                    label="Height",
+                    minimum=256,
+                    maximum=1024,
+                    step=32,
+                    value=480,
+                    visible=True,
+                )
+
+            with gr.Row():
+                txt2vid_frame_rate = gr.Slider(
+                    label="Frame Rate",
+                    minimum=21,
+                    maximum=30,
+                    step=1,
+                    value=25,
+                )
+                num_frames_slider = gr.Slider(
+                    label="Number of Frames",
+                    minimum=1,
+                    maximum=200,
+                    step=1,
+                    value=41,
+                    visible=True,
+                )
+
+            with gr.Row():
+                seed = gr.Number(label="Seed", minimum=0, maximum=1000000, step=1, value=646373, scale=1)
+                inference_steps = gr.Slider(label="Steps", minimum=1, maximum=50, step=1, value=30)
+                guidance_scale = gr.Slider(label="Guidance", minimum=1.0, maximum=5.0, step=0.1, value=3.0)
+
+        with gr.Column():
+            txt2vid_generate = gr.Button(
+                "Generate Video",
+                variant="primary",
+                size="lg",
+            )
+            txt2vid_output = gr.Video(label="Generated Output")
+
+    txt2vid_preset.change(fn=preset_changed, inputs=[txt2vid_preset], outputs=[width_slider, height_slider, num_frames_slider])
+
+    txt2vid_generate.click(
+        fn=generate_video,
+        inputs=[
+            img2vid_image,
+            txt2vid_prompt,
+            txt2vid_negative_prompt,
+            txt2vid_frame_rate,
+            seed,
+            inference_steps,
+            guidance_scale,
+            width_slider,
+            height_slider,
+            num_frames_slider            
+        ],
+        outputs=txt2vid_output,
+        concurrency_limit=1,
+        concurrency_id="generate_video",
+        queue=True,
+    )
+
     with gr.Row(elem_id="title-row"):
         gr.HTML(  # add technical report link
             """
@@ -307,125 +308,6 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         - Inference Steps: More steps (40+) for quality, fewer steps (20-30) for speed
         """
         )
-
-    with gr.Tabs():
-        # Text to Video Tab
-        with gr.TabItem("Text to Video"):
-            with gr.Row():
-                with gr.Column():
-                    txt2vid_prompt = gr.Textbox(
-                        label="Step 1: Enter Your Prompt",
-                        placeholder="Describe the video you want to generate (minimum 50 characters)...",
-                        value="A woman with long brown hair and light skin smiles at another woman with long blonde hair. The woman with brown hair wears a black jacket and has a small, barely noticeable mole on her right cheek. The camera angle is a close-up, focused on the woman with brown hair's face. The lighting is warm and natural, likely from the setting sun, casting a soft glow on the scene. The scene appears to be real-life footage.",
-                        lines=5,
-                    )
-
-                    txt2vid_negative_prompt = gr.Textbox(
-                        label="Step 2: Enter Negative Prompt",
-                        placeholder="Describe what you don't want in the video...",
-                        value="low quality, worst quality, deformed, distorted, disfigured, motion smear, motion artifacts, fused fingers, bad anatomy, weird hand, ugly",
-                        lines=2,
-                    )
-
-                    txt2vid_preset = gr.Dropdown(
-                        choices=[p["label"] for p in preset_options],
-                        value="800x480, 41 frames",
-                        label="Step 3.1: Choose Resolution Preset",
-                    )
-
-                    txt2vid_frame_rate = gr.Slider(
-                        label="Step 3.2: Frame Rate",
-                        minimum=21,
-                        maximum=30,
-                        step=1,
-                        value=25,
-                    )
-
-                    txt2vid_advanced = create_advanced_options()
-                    txt2vid_generate = gr.Button(
-                        "Step 5: Generate Video",
-                        variant="primary",
-                        size="lg",
-                    )
-
-                with gr.Column():
-                    txt2vid_output = gr.Video(label="Generated Output")
-
-        # Image to Video Tab
-        with gr.TabItem("Image to Video"):
-            with gr.Row():
-                with gr.Column():
-                    img2vid_image = gr.Image(
-                        type="pil",
-                        label="Step 1: Upload Input Image",
-                        elem_id="image_upload",
-                    )
-                    img2vid_prompt = gr.Textbox(
-                        label="Step 2: Enter Your Prompt",
-                        placeholder="Describe how you want to animate the image (minimum 50 characters)...",
-                        value="A woman with long brown hair and light skin smiles at another woman with long blonde hair. The woman with brown hair wears a black jacket and has a small, barely noticeable mole on her right cheek. The camera angle is a close-up, focused on the woman with brown hair's face. The lighting is warm and natural, likely from the setting sun, casting a soft glow on the scene. The scene appears to be real-life footage.",
-                        lines=5,
-                    )
-                    img2vid_negative_prompt = gr.Textbox(
-                        label="Step 3: Enter Negative Prompt",
-                        placeholder="Describe what you don't want in the video...",
-                        value="low quality, worst quality, deformed, distorted, disfigured, motion smear, motion artifacts, fused fingers, bad anatomy, weird hand, ugly",
-                        lines=2,
-                    )
-
-                    img2vid_preset = gr.Dropdown(
-                        choices=[p["label"] for p in preset_options],
-                        value="800x480, 41 frames",
-                        label="Step 3.1: Choose Resolution Preset",
-                    )
-
-                    img2vid_frame_rate = gr.Slider(
-                        label="Step 3.2: Frame Rate",
-                        minimum=21,
-                        maximum=30,
-                        step=1,
-                        value=25,
-                    )
-
-                    img2vid_advanced = create_advanced_options()
-                    img2vid_generate = gr.Button("Step 6: Generate Video", variant="primary", size="lg")
-
-                with gr.Column():
-                    img2vid_output = gr.Video(label="Generated Output")
-
-     # [Previous event handlers remain the same]
-    txt2vid_preset.change(fn=preset_changed, inputs=[txt2vid_preset], outputs=txt2vid_advanced[3:])
-
-    txt2vid_generate.click(
-        fn=generate_video_from_text,
-        inputs=[
-            txt2vid_prompt,
-            txt2vid_negative_prompt,
-            txt2vid_frame_rate,
-            *txt2vid_advanced,
-        ],
-        outputs=txt2vid_output,
-        concurrency_limit=1,
-        concurrency_id="generate_video",
-        queue=True,
-    )
-
-    img2vid_preset.change(fn=preset_changed, inputs=[img2vid_preset], outputs=img2vid_advanced[3:])
-
-    img2vid_generate.click(
-        fn=generate_video_from_image,
-        inputs=[
-            img2vid_image,
-            img2vid_prompt,
-            img2vid_negative_prompt,
-            img2vid_frame_rate,
-            *img2vid_advanced,
-        ],
-        outputs=img2vid_output,
-        concurrency_limit=1,
-        concurrency_id="generate_video",
-        queue=True,
-    )
 
     demo.unload(fn=unload)
 
