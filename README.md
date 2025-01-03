@@ -29,3 +29,8 @@ will download ~10.8GB models
 
 >[!NOTE]
 >Also saves a text file with same name (*LTXvideo_**datetime**.txt*), containing generation parameters.
+
+
+
+https://github.com/user-attachments/assets/4da0bf8a-63aa-4b21-85b0-d0af21ff095a
+
