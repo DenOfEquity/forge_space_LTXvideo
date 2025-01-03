@@ -1,10 +1,9 @@
-# needs diffusers 0.32.0.dev or higher
 from diffusers.utils import check_min_version
 check_min_version("0.32.0")
 
 import spaces
 import gradio as gr
-#from gradio_toggle import Toggle
+
 import torch
 
 from huggingface_hub import snapshot_download
@@ -18,79 +17,32 @@ from pipeline_ltx_image2video import LTXImageToVideoPipeline
 
 single_file_url = "https://huggingface.co/Lightricks/LTX-Video/ltx-video-2b-v0.9.1.safetensors"
 
-pipeline = LTXImageToVideoPipeline.from_pretrained(
-    "Lightricks/LTX-Video",
-    transformer=LTXVideoTransformer3DModel.from_single_file(single_file_url, torch_dtype=torch.bfloat16),
-    vae=AutoencoderKLLTXVideo.from_single_file(single_file_url, torch_dtype=torch.bfloat16),
-    text_encoder=T5EncoderModel.from_pretrained("Lightricks/T5-XXL-8bit", torch_dtype=torch.bfloat16, low_cpu_mem_usage=True),
-    torch_dtype=torch.bfloat16
-)
-
-pipeline.vae.enable_slicing()
-pipeline.enable_sequential_cpu_offload()
-
-from enum import Enum
-class ConditioningMethod(Enum):
-    UNCONDITIONAL = "unconditional"
-    FIRST_FRAME = "first_frame"
-    LAST_FRAME = "last_frame"
-    FIRST_AND_LAST_FRAME = "first_and_last_frame"
 
 import numpy as np
 import cv2
 from PIL import Image
 import os
 import gc
+import random
 
 from datetime import datetime
+
+MAX_SEED = np.iinfo(np.int32).max
 
 # Global variables to load components
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Preset options for resolution and frame configuration
-preset_options = [
-    {"label": "1216x704, 41 frames", "width": 1216, "height": 704, "num_frames": 41},
-    {"label": "1088x704, 49 frames", "width": 1088, "height": 704, "num_frames": 49},
-    {"label": "1056x640, 57 frames", "width": 1056, "height": 640, "num_frames": 57},
-    {"label": "992x608, 65 frames", "width": 992, "height": 608, "num_frames": 65},
-    {"label": "896x608, 73 frames", "width": 896, "height": 608, "num_frames": 73},
-    {"label": "896x544, 81 frames", "width": 896, "height": 544, "num_frames": 81},
-    {"label": "832x544, 89 frames", "width": 832, "height": 544, "num_frames": 89},
-    {"label": "800x512, 97 frames", "width": 800, "height": 512, "num_frames": 97},
-    {"label": "768x512, 97 frames", "width": 768, "height": 512, "num_frames": 97},
-    {"label": "800x480, 41 frames", "width": 800, "height": 480, "num_frames": 41},
-    {"label": "800x480, 105 frames", "width": 800, "height": 480, "num_frames": 105},
-    {"label": "736x480, 113 frames", "width": 736, "height": 480, "num_frames": 113},
-    {"label": "704x480, 121 frames", "width": 704, "height": 480, "num_frames": 121},
-    {"label": "704x448, 129 frames", "width": 704, "height": 448, "num_frames": 129},
-    {"label": "672x448, 137 frames", "width": 672, "height": 448, "num_frames": 137},
-    {"label": "640x416, 153 frames", "width": 640, "height": 416, "num_frames": 153},
-    {"label": "672x384, 161 frames", "width": 672, "height": 384, "num_frames": 161},
-    {"label": "640x384, 169 frames", "width": 640, "height": 384, "num_frames": 169},
-    {"label": "608x384, 177 frames", "width": 608, "height": 384, "num_frames": 177},
-    {"label": "576x384, 185 frames", "width": 576, "height": 384, "num_frames": 185},
-    {"label": "608x352, 193 frames", "width": 608, "height": 352, "num_frames": 193},
-    {"label": "576x352, 201 frames", "width": 576, "height": 352, "num_frames": 201},
-    {"label": "544x352, 209 frames", "width": 544, "height": 352, "num_frames": 209},
-    {"label": "512x352, 225 frames", "width": 512, "height": 352, "num_frames": 225},
-    {"label": "512x352, 233 frames", "width": 512, "height": 352, "num_frames": 233},
-    {"label": "544x320, 241 frames", "width": 544, "height": 320, "num_frames": 241},
-    {"label": "512x320, 249 frames", "width": 512, "height": 320, "num_frames": 249},
-    {"label": "512x320, 257 frames", "width": 512, "height": 320, "num_frames": 257},
-]
-
-
-# Function to toggle visibility of sliders based on preset selection
-def preset_changed(preset):
-    selected = next(item for item in preset_options if item["label"] == preset)
-    return (
-        selected["height"],
-        selected["width"],
-        selected["num_frames"],
-    )
-
-# Load models
-#patchifier = SymmetricPatchifier(patch_size=1)
+class LTXStorage:
+    noUnload = False
+    lowVRAM = False
+    pipelineTE = None
+    pipelineTR = None
+    lastPrompt = None
+    lastNegative = None
+    positive_embeds = None
+    negative_embeds = None
+    positive_attention = None
+    negative_attention = None
 
 
 def generate_video(
@@ -98,7 +50,8 @@ def generate_video(
     prompt="",
     negative_prompt="",
     frame_rate=25,
-    seed=646373,
+    seed=11111,
+    randomize_seed=False,
     num_inference_steps=30,
     guidance_scale=3,
     width=800,
@@ -106,6 +59,7 @@ def generate_video(
     num_frames=41,
     progress=gr.Progress(),
 ):
+    torch.set_grad_enabled(False)
 
     if len(prompt.strip()) < 50:
         raise gr.Error(
@@ -113,49 +67,127 @@ def generate_video(
             duration=5,
         )
 
+    ##  text encoding, if prompt has changed
+    if prompt != LTXStorage.lastPrompt or negative_prompt != LTXStorage.lastNegative:
+        if LTXStorage.pipelineTE is None:
+            LTXStorage.pipelineTE = LTXImageToVideoPipeline.from_pretrained(
+                "Lightricks/LTX-Video",
+                transformer=None,
+                vae=None,
+                scheduler=None,
+                text_encoder=T5EncoderModel.from_pretrained("Lightricks/T5-XXL-8bit", torch_dtype=torch.bfloat16, low_cpu_mem_usage=True),
+                torch_dtype=torch.bfloat16,
+            )
+
+        if LTXStorage.lowVRAM == True:
+            LTXStorage.pipelineTE.enable_sequential_cpu_offload()
+        else:
+            LTXStorage.pipelineTE.enable_model_cpu_offload()
+
+        LTXStorage.prompt_embeds, LTXStorage.prompt_attention_mask, LTXStorage.negative_prompt_embeds, LTXStorage.negative_prompt_attention_mask = LTXStorage.pipelineTE.encode_prompt(prompt, negative_prompt=negative_prompt)
+
+        LTXStorage.lastPrompt = prompt
+        LTXStorage.lastNegative = negative_prompt
+
+        if LTXStorage.noUnload == False:
+            LTXStorage.pipelineTE = None
+            torch.cuda.empty_cache()
+            gc.collect()
+
+    if randomize_seed:
+        seed = random.randint(0, MAX_SEED)
+
     generator = torch.Generator(device="cuda").manual_seed(seed)
 
     def gradio_progress_callback(self, step, timestep, kwargs):
         progress((step + 1) / num_inference_steps)
 
     try:
-        with torch.no_grad():
-            video = pipeline(
-                prompt = prompt,
-                negative_prompt = negative_prompt,
-                num_inference_steps=num_inference_steps,
-                num_frames=num_frames,
-                width=width,
-                height=height,
-                guidance_scale=guidance_scale,
-                generator=generator,
-                frame_rate=frame_rate,
-                image=image,
-            ).frames[0]
+        if LTXStorage.pipelineTR is None:
+            LTXStorage.pipelineTR = LTXImageToVideoPipeline.from_pretrained(
+                "Lightricks/LTX-Video",
+                transformer=LTXVideoTransformer3DModel.from_single_file(single_file_url, torch_dtype=torch.bfloat16),
+                vae=AutoencoderKLLTXVideo.from_single_file(single_file_url, torch_dtype=torch.bfloat16),
+                text_encoder=None,
+                tokenizer=None,
+                torch_dtype=torch.bfloat16,
+            )
+            LTXStorage.pipelineTR.vae.enable_slicing()
 
-        output_path = f"outputs\\LTXvideo_{datetime.now().strftime('%Y%m%d%H%M%S')}.mp4"
-        export_to_video(video, output_path, fps=frame_rate)
+        if LTXStorage.lowVRAM == True:
+            LTXStorage.pipelineTR.enable_sequential_cpu_offload()
+        else:
+            LTXStorage.pipelineTR.to('cuda')
+
+        video = LTXStorage.pipelineTR(
+            prompt_embeds=LTXStorage.prompt_embeds.to('cuda'),
+            prompt_attention_mask=LTXStorage.prompt_attention_mask.to('cuda'),
+            negative_prompt_embeds=LTXStorage.negative_prompt_embeds.to('cuda'),
+            negative_prompt_attention_mask=LTXStorage.negative_prompt_attention_mask.to('cuda'),
+            num_inference_steps=num_inference_steps,
+            num_frames=num_frames,
+            width=width,
+            height=height,
+            guidance_scale=guidance_scale,
+            generator=generator,
+            frame_rate=frame_rate,
+            image=image,
+            noUnload=LTXStorage.noUnload,
+            lowVRAM=LTXStorage.lowVRAM,
+        ).frames[0]
+
+        if LTXStorage.noUnload == False:
+            LTXStorage.pipelineTR = None
+
+        output_path = f"outputs\\LTXvideo_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        export_to_video(video, output_path+".mp4", fps=frame_rate)
         del video
-
+        
+        info = f"Prompt: {prompt}\nNegative prompt: {negative_prompt}\nSize: {width}x{height}, Frames (rate): {num_frames} ({frame_rate}), Steps: {num_inference_steps}, Seed: {seed}, Guidance: {guidance_scale}"
+        with open(output_path+".txt", "w", encoding="utf8") as file:
+            file.write(f"{info}\n")
     except Exception as e:
         raise gr.Error(
             f"An error occurred while generating the video. Please try again. Error: {e}",
             duration=5,
         )
-
     finally:
         torch.cuda.empty_cache()
         gc.collect()
 
-    return output_path
+    return output_path+".mp4", seed
 
 
 def unload():
-    global pipeline
-    del pipeline
+    LTXStorage.pipelineTE = None
+    LTXStorage.pipelineTR = None
+    LTXStorage.lastPrompt = None
+    LTXStorage.lastNegative = None
+    LTXStorage.positive_embeds = None
+    LTXStorage.negative_embeds = None
+    LTXStorage.positive_attention = None
+    LTXStorage.negative_attention = None
     gc.collect()
     torch.cuda.empty_cache()
 
+def toggleNU ():
+    LTXStorage.noUnload ^= True
+    return gr.Button.update(variant=['secondary', 'primary'][LTXStorage.noUnload])
+def toggleLV ():
+    LTXStorage.lowVRAM = True   #   note: once applied, stays applied for this session
+    return gr.Button.update(variant=['secondary', 'primary'][LTXStorage.lowVRAM])
+def setWH (image):
+    width = image.size[0]
+    height = image.size[1]
+    
+    long = max(width, height)
+    if long > 1280:
+        w = width / long * 1280
+        h = height / long * 1280
+        width = 32 * (int(w + 16) // 32)
+        height = 32 * (int(h + 16) // 32)
+    
+    return [width, height]
 
 # Define the Gradio interface with tabs
 with gr.Blocks(theme=gr.themes.Soft()) as demo:
@@ -172,7 +204,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         with gr.Column():
             img2vid_image = gr.Image(
                 type="pil",
-                height="50vh",
+                height="40vh",
                 label="Upload Input Image (leave empty for Text-to-Video)",
                 elem_id="image_upload",
             )
@@ -190,17 +222,11 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                 lines=2,
             )
 
-            txt2vid_preset = gr.Dropdown(
-                choices=[p["label"] for p in preset_options],
-                value="800x480, 41 frames",
-                label="Choose Resolution Preset",
-            )
-
             with gr.Row():
                 width_slider = gr.Slider(
                     label="Width",
                     minimum=256,
-                    maximum=1024,
+                    maximum=1280,
                     step=32,
                     value=800,
                     visible=True,
@@ -208,7 +234,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                 height_slider = gr.Slider(
                     label="Height",
                     minimum=256,
-                    maximum=1024,
+                    maximum=1280,
                     step=32,
                     value=480,
                     visible=True,
@@ -225,16 +251,26 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                 num_frames_slider = gr.Slider(
                     label="Number of Frames",
                     minimum=1,
-                    maximum=200,
-                    step=1,
+                    maximum=257,
+                    step=8,
                     value=41,
                     visible=True,
                 )
 
             with gr.Row():
-                seed = gr.Number(label="Seed", minimum=0, maximum=1000000, step=1, value=646373, scale=1)
+                seed = gr.Number(label="Seed", minimum=0, maximum=MAX_SEED, step=1, value=11111)
+                randomize_seed = gr.Checkbox(label="Randomize seed", value=True)
+            with gr.Row():
                 inference_steps = gr.Slider(label="Steps", minimum=1, maximum=50, step=1, value=30)
                 guidance_scale = gr.Slider(label="Guidance", minimum=1.0, maximum=5.0, step=0.1, value=3.0)
+
+            with gr.Row():
+                noUnload = gr.Button(value='keep models loaded', variant='primary' if LTXStorage.noUnload else 'secondary', tooltip='noUnload', scale=0)
+                lowVRAM = gr.Button(value='low VRAM', variant='primary' if LTXStorage.lowVRAM else 'secondary', tooltip='low VRAM', scale=0)
+
+        noUnload.click(toggleNU, inputs=[], outputs=noUnload)
+        lowVRAM.click(toggleLV, inputs=[], outputs=lowVRAM)
+        img2vid_image.upload(setWH, inputs=img2vid_image, outputs=[width_slider, height_slider])
 
         with gr.Column():
             txt2vid_generate = gr.Button(
@@ -242,9 +278,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                 variant="primary",
                 size="lg",
             )
-            txt2vid_output = gr.Video(label="Generated Output")
-
-    txt2vid_preset.change(fn=preset_changed, inputs=[txt2vid_preset], outputs=[width_slider, height_slider, num_frames_slider])
+            txt2vid_output = gr.Video(label="Generated Output", height="70vh")
 
     txt2vid_generate.click(
         fn=generate_video,
@@ -254,34 +288,19 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
             txt2vid_negative_prompt,
             txt2vid_frame_rate,
             seed,
+            randomize_seed,
             inference_steps,
             guidance_scale,
             width_slider,
             height_slider,
             num_frames_slider            
         ],
-        outputs=txt2vid_output,
+        outputs=[txt2vid_output, seed],
         concurrency_limit=1,
         concurrency_id="generate_video",
         queue=True,
     )
 
-    with gr.Row(elem_id="title-row"):
-        gr.HTML(  # add technical report link
-            """
-        <div style="display:flex;column-gap:4px;">
-            <a href="https://github.com/Lightricks/LTX-Video">
-                <img src='https://img.shields.io/badge/GitHub-Repo-blue'>
-            </a>
-            <a href="http://www.lightricks.com/ltxv">
-                <img src="https://img.shields.io/badge/Project-Page-green" alt="Follow me on HF">
-            </a>
-            <a href="https://huggingface.co/Lightricks">
-                <img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/follow-me-on-HF-sm-dark.svg" alt="Follow me on HF">
-            </a>
-        </div>
-        """
-        )
     with gr.Accordion(" 📖 Tips for Best Results", open=False, elem_id="instructions-accordion"):
         gr.Markdown(
             """
@@ -302,12 +321,27 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
 
         🎮 Parameter Guide
 
-        - Resolution Preset: Higher resolutions for detailed scenes, lower for faster generation and simpler scenes
         - Seed: Save seed values to recreate specific styles or compositions you like
         - Guidance Scale: 3-3.5 are the recommended values
         - Inference Steps: More steps (40+) for quality, fewer steps (20-30) for speed
         """
         )
+        with gr.Row(elem_id="title-row"):
+            gr.HTML(  # add technical report link
+                """
+            <div style="display:flex;column-gap:4px;">
+                <a href="https://github.com/Lightricks/LTX-Video">
+                    <img src='https://img.shields.io/badge/GitHub-Repo-blue'>
+                </a>
+                <a href="http://www.lightricks.com/ltxv">
+                    <img src="https://img.shields.io/badge/Project-Page-green">
+                </a>
+                <a href="https://huggingface.co/Lightricks">
+                    Lightricks HuggingFace
+                </a>
+            </div>
+            """
+            )
 
     demo.unload(fn=unload)
 

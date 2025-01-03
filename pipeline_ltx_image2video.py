@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 import numpy as np
 import torch
+import gc
 from transformers import T5EncoderModel, T5TokenizerFast
 
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
@@ -205,17 +206,25 @@ class LTXImageToVideoPipeline(DiffusionPipeline, FromSingleFileMixin, LTXVideoLo
             scheduler=scheduler,
         )
 
-        self.vae_spatial_compression_ratio = self.vae.spatial_compression_ratio if hasattr(self, "vae") else 32
-        self.vae_temporal_compression_ratio = self.vae.temporal_compression_ratio if hasattr(self, "vae") else 8
-        self.transformer_spatial_patch_size = self.transformer.config.patch_size if hasattr(self, "transformer") else 1
-        self.transformer_temporal_patch_size = (
-            self.transformer.config.patch_size_t if hasattr(self, "transformer") else 1
-        )
+        if hasattr(self, "vae") and self.vae is not None:
+            self.vae_spatial_compression_ratio = self.vae.spatial_compression_ratio
+            self.vae_temporal_compression_ratio = self.vae.temporal_compression_ratio
+            self.video_processor = VideoProcessor(vae_scale_factor=self.vae_spatial_compression_ratio)
+        else:
+            self.vae_spatial_compression_ratio = 32
+            self.vae_temporal_compression_ratio = 8
 
-        self.video_processor = VideoProcessor(vae_scale_factor=self.vae_spatial_compression_ratio)
-        self.tokenizer_max_length = (
-            self.tokenizer.model_max_length if hasattr(self, "tokenizer") and self.tokenizer is not None else 128
-        )
+        if hasattr(self, "transformer") and self.transformer is not None:
+            self.transformer_spatial_patch_size = self.transformer.config.patch_size
+            self.transformer_temporal_patch_size = self.transformer.config.patch_size_t
+        else:
+            self.transformer_spatial_patch_size = 1
+            self.transformer_temporal_patch_size = 1
+
+        if hasattr(self, "tokenizer") and self.tokenizer is not None:
+            self.tokenizer_max_length = self.tokenizer.model_max_length
+        else:
+            self.tokenizer_max_length = 128
 
         self.default_height = 512
         self.default_width = 704
@@ -611,6 +620,8 @@ class LTXImageToVideoPipeline(DiffusionPipeline, FromSingleFileMixin, LTXVideoLo
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 128,
+        noUnload: bool = False,
+        lowVRAM: bool = False,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -810,6 +821,9 @@ class LTXImageToVideoPipeline(DiffusionPipeline, FromSingleFileMixin, LTXVideoLo
         )
 
         # 7. Denoising loop
+        if lowVRAM == False:    # sequential offload NOT enabled, move model anyway to maximise inference memory
+            self.vae.to('cpu')
+
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -905,6 +919,16 @@ class LTXImageToVideoPipeline(DiffusionPipeline, FromSingleFileMixin, LTXVideoLo
 
                 if XLA_AVAILABLE:
                     xm.mark_step()
+
+        if noUnload == True:
+            del self.transformer
+            torch.cuda.empty_cache()
+            gc.collect()
+        elif lowVRAM == True: #sequential offload enabled
+            pass
+        else:
+            self.transformer.to('cpu')
+            self.vae.to('cuda')
 
         if output_type == "latent":
             video = latents
